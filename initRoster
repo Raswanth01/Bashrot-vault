@@ -1,0 +1,73 @@
+#!/bin/bash
+# The line above is the "Shebang". It tells Ubuntu this is a Bash script.
+
+# This variable tells the script where your roster file is.
+YAML_FILE="/home/raswanth/roster.yaml"
+# -f means 'force'. It creates the group if it doesn't already exist.
+sudo groupadd -f bashers
+sudo groupadd -f guards
+sudo groupadd -f wardens
+
+setup_user() {
+    # These are ingredients (arguments) passed to the recipe
+    local user=$1
+    local group=$2
+    local img=$3
+    local key=$4
+    local home="/home/$group/$user"
+
+    # 1. Create the user with a custom home directory
+    if ! id "$user" &>/dev/null; then
+        sudo useradd -m -d "$home" -g "$group" -s /bin/bash "$user"
+    fi
+
+    # 2. Setup SSH Key (The "No Password" rule)
+    sudo mkdir -p "$home/.ssh"
+    echo "$key" | sudo tee "$home/.ssh/authorized_keys" > /dev/null
+    sudo chmod 700 "$home/.ssh"
+    sudo chmod 600 "$home/.ssh/authorized_keys"
+
+    # 3. Basher Specific Rules
+    if [ "$group" == "bashers" ]; then
+        sudo passwd -l "$user"              # Lock password login
+        sudo mkdir -p "$home/Drop_Zone"      # Create the Drop_Zone
+        sudo chmod 700 "$home"               # Keep home private
+        
+        # Inject slang aliases into their bashrc
+        echo -e "alias cap='clear'\nalias sus='ls'\nalias mog='tail'" | sudo tee -a "$home/.bashrc" > /dev/null
+    fi
+
+    # 4. Guard "Aura": Let guards/wardens look into basher folders
+    sudo setfacl -m g:guards:rx "$home"
+    sudo setfacl -m g:wardens:rx "$home"
+
+    # 5. The ASCII Art
+    # Download, convert to ASCII, and save as hidden file
+    sudo curl -sL "$img" -o "/tmp/avatar.jpg"
+    sudo jp2a --width=40 "/tmp/avatar.jpg" | sudo tee "$home/.avatar.txt" > /dev/null
+    
+    # Make it print automatically when they log in
+    if ! grep -q ".avatar.txt" "$home/.bashrc"; then
+        echo "cat ~/.avatar.txt" | sudo tee -a "$home/.bashrc" > /dev/null
+    fi
+}
+# --- THE UPDATED LOOP FOR YOUR VERSION OF YQ ---
+for role in wardens guards bashers; do
+    echo "--- Processing $role ---"
+
+    # In your version, the command structure is: yq [filter] [file]
+    # We use -r to get a "raw" number
+    count=$(yq -r ".roster.$role | length" "$YAML_FILE")
+    
+    echo "Found $count users in $role."
+
+    for ((i=0; i<$count; i++)); do
+        # Again, filter first, then the file
+        U=$(yq -r ".roster.$role[$i].username" "$YAML_FILE")
+        I=$(yq -r ".roster.$role[$i].image_url" "$YAML_FILE")
+        K=$(yq -r ".roster.$role[$i].public_key" "$YAML_FILE")
+        
+        echo "Setting up user: $U..."
+        setup_user "$U" "$role" "$I" "$K"
+    done
+done
