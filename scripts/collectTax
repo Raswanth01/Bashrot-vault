@@ -1,0 +1,34 @@
+#!/bin/bash
+
+LOG="/var/log/aura_tax.log"
+
+# 1. Loop through every folder in /home/bashers
+for basher_dir in /home/bashers/*; do
+    [ -d "$basher_dir" ] || continue # Only process if it's a directory
+    basher_name=$(basename "$basher_dir")
+
+    # 2. Check size (du -s = summary, -m = megabytes)
+    size=$(du -sm "$basher_dir" | cut -f1)
+
+    if [ "$size" -gt 5 ]; then
+        # 3. Find 3 oldest files (ls -tr = time reverse, head -3 = top 3)
+        # We find only files (-type f) to avoid deleting their home folder itself!
+        # THE FIX: Exclude hidden files starting with a dot
+        old_files=$(find "$basher_dir" -type f ! -name ".*" -printf '%T+ %p\n' | sort | head -n 3 | awk '{print $2}')
+
+        for file in $old_files; do
+            file_size=$(du -k "$file" | cut -f1)
+            file_name=$(basename "$file")
+            
+            # Log the deletion
+            echo "$(date '+%Y-%m-%d %H:%M:%S') | $basher_name | ${file_size} | $file_name" | sudo tee -a "$LOG" > /dev/null
+            
+            # Delete the file
+            sudo rm "$file"
+        done
+    fi
+done
+
+# 4. Set Log Permissions (Only Guards/Wardens)
+sudo chown root:guards "$LOG"
+sudo chmod 660 "$LOG"

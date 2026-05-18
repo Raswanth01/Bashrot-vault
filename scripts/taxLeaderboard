@@ -1,0 +1,9 @@
+#!/bin/bash
+
+LOG="/var/log/aura_tax.log"
+
+echo "--- AURA TAX LEADERBOARD ---"
+# awk breakdown: 
+# -F "|" sets the separator. 
+# {sum[$2] += $3} creates a list of bashers ($2) and adds their file size ($3)
+awk -F "|" '{sum[$2] += $3} END {for (i in sum) print i ": " sum[i] " KB"}' "$LOG" | sort -rnk 2

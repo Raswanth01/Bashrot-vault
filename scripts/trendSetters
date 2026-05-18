@@ -1,0 +1,79 @@
+#!/bin/bash
+
+# 1. Access Control
+if ! groups $USER | grep -q "\bwardens\b"; then
+    echo "Access Denied: Wardens only."
+    exit 1
+fi
+
+LOG_FILE="/var/log/heist.log"
+BOARD_LOG="/var/log/leaderboard.log"
+PREV_BOARD="/tmp/prev_leaderboard.tmp"
+NOW=$(date +%s)
+
+# Ensure the board log exists with correct ACLs
+if [ ! -f "$BOARD_LOG" ]; then
+    sudo touch "$BOARD_LOG"
+    sudo chown root:wardens "$BOARD_LOG"
+    sudo setfacl -m g:guards:r,g:wardens:r "$BOARD_LOG"
+    sudo chmod 640 "$BOARD_LOG"
+fi
+
+# 2. Get list of active bashers
+bashers=$(awk -F'|' '{print $2}' "$LOG_FILE" | cut -d':' -f2 | tr -d ' ' | sort -u)
+num_bashers=$(echo "$bashers" | wc -w)
+
+declare -A current_scores
+declare -A last_active
+
+for basher in $bashers; do
+    # --- STREAK (Last 24h, 5-min window) ---
+    # Finds the highest count of heists in any 300s window
+    max_streak=0
+    heist_times=$(grep "Basher: $basher" "$LOG_FILE" | awk -F'|' '{print $1}' | xargs -I{} date -d "{}" +%s)
+    
+    for t in $heist_times; do
+        count=$(echo "$heist_times" | awk -v start="$t" -v end="$((t+300))" '$1 >= start && $1 <= end' | wc -l)
+        if [ "$count" -gt "$max_streak" ]; then max_streak=$count; fi
+    done
+    streak_score=$((max_streak * 10))
+
+    # --- CLUTCH FACTOR (Most recent overall) ---
+    latest_heist_global=$(tail -n 1 "$LOG_FILE" | grep "$basher")
+    clutch_bonus=0
+    [ -n "$latest_heist_global" ] && clutch_bonus=50
+
+    # --- DECAY FACTOR (Logarithmic) ---
+    last_t=$(echo "$heist_times" | sort -nr | head -n 1)
+    last_active[$basher]=$last_t
+    diff=$((NOW - last_t))
+    # Log penalty: score / log(time_diff + 2)
+    decay_penalty=$(echo "l($diff + 2)" | bc -l)
+    
+    # Final Normalized Score
+    raw_score=$(echo "($streak_score + $clutch_bonus) / $decay_penalty" | bc -l)
+    current_scores[$basher]=$(echo "$raw_score / $num_bashers" | bc -l)
+done
+
+# 3. Sort and Compare
+# Sort by score (desc), then by timestamp (desc) for ties
+output=$(for b in "${!current_scores[@]}"; do
+    echo "${current_scores[$b]} ${last_active[$b]} $b"
+done | sort -k1,1nr -k2,2nr | head -n 3)
+
+echo "--- 🏆 TRENDSETTERS LEADERBOARD ($(date)) ---"
+rank=1
+while read -r score time name; do
+    # Position tracking
+    prev_pos=$(grep "$name" "$PREV_BOARD" | cut -d' ' -f1)
+    change="-"
+    if [ -n "$prev_pos" ]; then
+        if [ "$rank" -lt "$prev_pos" ]; then change="↑"; elif [ "$rank" -gt "$prev_pos" ]; then change="↓"; fi
+    fi
+    
+    printf "%d. %-10s | Score: %-6.2f | %s\n" "$rank" "$name" "$score" "$change"
+    echo "$rank $name" >> "${PREV_BOARD}.new"
+    ((rank++))
+done <<< "$output"
+
+mv "${PREV_BOARD}.new" "$PREV_BOARD" 2>/dev/null
